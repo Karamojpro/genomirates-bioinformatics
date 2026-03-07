@@ -1007,7 +1007,219 @@ def cancer_risk():
 # ─────────────────────────────────────────
 # RUN
 # ─────────────────────────────────────────
+# ─────────────────────────────────────────
+# BANK ENDPOINTS
+# ─────────────────────────────────────────
 
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+
+def supabase_insert(table, data):
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    response = requests.post(
+        f"{SUPABASE_URL}/rest/v1/{table}",
+        headers=headers,
+        json=data
+    )
+    return response.json()
+
+def supabase_select(table, filters=None):
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    if filters:
+        url += f"?{filters}"
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+
+@app.route('/api/bank/deposit', methods=['POST'])
+def bank_deposit():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON body"}), 400
+
+        required = ['category', 'species', 'region', 'country', 'consent_level', 'analysis_results']
+        for field in required:
+            if field not in data:
+                return jsonify({"status": "error", "message": f"Missing required field: {field}"}), 400
+
+        category = data['category']
+        country_code = data['country'][:3].upper()
+        year = __import__('datetime').datetime.now().year
+
+        count_result = supabase_select('bank_samples', f'select=count&category=eq.{category}')
+        try:
+            count = len(count_result) + 1
+        except:
+            count = 1
+
+        bank_id = f"AGBB-{category[:3].upper()}-{country_code}-{year}-{str(count).zfill(5)}"
+
+        sample_record = {
+            "bank_id": bank_id,
+            "category": data['category'],
+            "species": data['species'],
+            "common_name": data.get('common_name', ''),
+            "region": data['region'],
+            "country": data['country'],
+            "location": data.get('location', ''),
+            "consent_level": data['consent_level'],
+            "access_level": data.get('access_level', 'Restricted'),
+            "file_reference": data.get('file_reference', ''),
+            "analysis_results": data['analysis_results'],
+            "gc_content": data['analysis_results'].get('gc_content_percentage'),
+            "sequence_length": data['analysis_results'].get('sequence_length'),
+            "quality_score": data['analysis_results'].get('quality_score'),
+            "overall_quality": data['analysis_results'].get('overall_quality'),
+            "status": "Pending",
+            "anonymization_status": "Anonymized"
+        }
+
+        result = supabase_insert('bank_samples', sample_record)
+
+        return jsonify({
+            "status": "success",
+            "bank_id": bank_id,
+            "message": f"Sample successfully deposited to Arabian Genomic Biodiversity Bank",
+            "record": sample_record
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Bank deposit failed: {str(e)}"}), 500
+
+
+@app.route('/api/bank/catalogue', methods=['GET'])
+def bank_catalogue():
+    try:
+        results = supabase_select(
+            'bank_samples',
+            'select=bank_id,category,species,common_name,region,country,collection_date,overall_quality,quality_score,status,access_level&status=eq.Published&access_level=eq.Public&order=created_at.desc'
+        )
+
+        categories = {}
+        species_list = []
+        countries = []
+
+        for r in results:
+            cat = r.get('category', 'Unknown')
+            categories[cat] = categories.get(cat, 0) + 1
+            if r.get('species') not in species_list:
+                species_list.append(r.get('species'))
+            if r.get('country') not in countries:
+                countries.append(r.get('country'))
+
+        return jsonify({
+            "status": "success",
+            "catalogue": {
+                "total_samples": len(results),
+                "total_species": len(species_list),
+                "total_countries": len(countries),
+                "category_distribution": categories,
+                "samples": results
+            }
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Catalogue retrieval failed: {str(e)}"}), 500
+
+
+@app.route('/api/bank/retrieve/<bank_id>', methods=['GET'])
+def bank_retrieve(bank_id):
+    try:
+        results = supabase_select(
+            'bank_samples',
+            f'select=*&bank_id=eq.{bank_id}'
+        )
+
+        if not results or len(results) == 0:
+            return jsonify({"status": "error", "message": f"Sample {bank_id} not found"}), 404
+
+        sample = results[0]
+
+        if sample.get('access_level') == 'Private':
+            return jsonify({"status": "error", "message": "This sample is private and requires authorization"}), 403
+
+        return jsonify({
+            "status": "success",
+            "sample": sample
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Sample retrieval failed: {str(e)}"}), 500
+
+
+@app.route('/api/bank/request', methods=['POST'])
+def bank_request():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON body"}), 400
+
+        required = ['researcher_name', 'institution', 'email', 'research_purpose', 'access_type']
+        for field in required:
+            if field not in data:
+                return jsonify({"status": "error", "message": f"Missing field: {field}"}), 400
+
+        request_record = {
+            "researcher_name": data['researcher_name'],
+            "institution": data['institution'],
+            "email": data['email'],
+            "research_purpose": data['research_purpose'],
+            "requested_categories": data.get('requested_categories', []),
+            "requested_species": data.get('requested_species', []),
+            "access_type": data['access_type'],
+            "status": "Pending"
+        }
+
+        result = supabase_insert('bank_access_requests', request_record)
+
+        return jsonify({
+            "status": "success",
+            "message": "Research access request submitted successfully. You will be contacted within 5 business days.",
+            "request_id": result[0].get('id') if result else None
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Access request failed: {str(e)}"}), 500
+
+
+@app.route('/api/bank/waitlist', methods=['POST'])
+def bank_waitlist():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON body"}), 400
+
+        if 'email' not in data or 'name' not in data:
+            return jsonify({"status": "error", "message": "Name and email are required"}), 400
+
+        waitlist_record = {
+            "name": data['name'],
+            "email": data['email'],
+            "organization": data.get('organization', ''),
+            "interest_type": data.get('interest_type', 'Individual'),
+            "message": data.get('message', '')
+        }
+
+        result = supabase_insert('bank_waitlist', waitlist_record)
+
+        return jsonify({
+            "status": "success",
+            "message": "Successfully joined the Arabian Genomic Biodiversity Bank waitlist. We will be in touch soon."
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Waitlist signup failed: {str(e)}"}), 500
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
