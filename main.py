@@ -1220,6 +1220,429 @@ def bank_waitlist():
 
     except Exception as e:
         return jsonify({"status": "error", "message": f"Waitlist signup failed: {str(e)}"}), 500
+# ─────────────────────────────────────────
+# PROTEIN DESIGN & ANALYSIS ENDPOINTS
+# ─────────────────────────────────────────
+
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
+from Bio.Seq import Seq
+
+def translate_dna_to_protein(dna_sequence):
+    """Translate DNA sequence to protein"""
+    dna_seq = Seq(dna_sequence)
+    # Remove incomplete codons
+    trim_length = len(dna_seq) - (len(dna_seq) % 3)
+    dna_seq = dna_seq[:trim_length]
+    protein = dna_seq.translate(to_stop=True)
+    return str(protein)
+
+def analyze_protein(protein_sequence):
+    """Full physicochemical analysis of protein sequence"""
+    # Remove stop codons and invalid characters
+    clean_protein = ''.join(c for c in protein_sequence.upper() 
+                           if c in 'ACDEFGHIKLMNPQRSTVWY')
+    
+    if len(clean_protein) < 10:
+        return None
+    
+    analysis = ProteinAnalysis(clean_protein)
+    
+    # Basic properties
+    mol_weight = round(analysis.molecular_weight(), 2)
+    isoelectric_point = round(analysis.isoelectric_point(), 2)
+    instability_index = round(analysis.instability_index(), 2)
+    gravy = round(analysis.gravy(), 4)
+    aromaticity = round(analysis.aromaticity(), 4)
+    
+    # Amino acid composition
+    aa_composition = {k: round(v, 4) for k, v in analysis.get_amino_acids_percent().items()}
+    
+    # Secondary structure fraction
+    helix, turn, sheet = analysis.secondary_structure_fraction()
+    
+    # Stability assessment
+    if instability_index < 40:
+        stability = "Stable"
+        stability_interpretation = "Protein is predicted to be stable in vitro."
+    else:
+        stability = "Unstable"
+        stability_interpretation = "Protein may be unstable. Consider optimization."
+    
+    # Hydrophobicity assessment
+    if gravy > 0:
+        hydrophobicity = "Hydrophobic"
+        hydrophobicity_note = "Protein tends to be hydrophobic — likely membrane-associated."
+    else:
+        hydrophobicity = "Hydrophilic"
+        hydrophobicity_note = "Protein tends to be hydrophilic — likely soluble."
+    
+    # Charge at pH 7
+    charge_ph7 = round(analysis.charge_at_pH(7.0), 2)
+    
+    if charge_ph7 > 0:
+        charge_type = "Basic"
+    elif charge_ph7 < 0:
+        charge_type = "Acidic"
+    else:
+        charge_type = "Neutral"
+    
+    return {
+        "protein_length": len(clean_protein),
+        "molecular_weight_da": mol_weight,
+        "isoelectric_point": isoelectric_point,
+        "instability_index": instability_index,
+        "stability": stability,
+        "stability_interpretation": stability_interpretation,
+        "gravy_score": gravy,
+        "hydrophobicity": hydrophobicity,
+        "hydrophobicity_note": hydrophobicity_note,
+        "aromaticity": aromaticity,
+        "charge_at_pH7": charge_ph7,
+        "charge_type": charge_type,
+        "secondary_structure": {
+            "helix_fraction": round(helix, 4),
+            "turn_fraction": round(turn, 4),
+            "sheet_fraction": round(sheet, 4)
+        },
+        "amino_acid_composition": aa_composition
+    }
+
+def score_drug_target_potential(protein_data):
+    """Score protein as potential drug target"""
+    score = 0
+    reasons = []
+    
+    # Molecular weight — ideal drug targets 20-150 kDa
+    mw = protein_data['molecular_weight_da']
+    if 20000 <= mw <= 150000:
+        score += 20
+        reasons.append("Molecular weight in ideal drug target range")
+    
+    # Stability — stable proteins are better targets
+    if protein_data['stability'] == "Stable":
+        score += 20
+        reasons.append("Protein is stable — suitable for drug binding studies")
+    
+    # Hydrophilicity — soluble proteins easier to work with
+    if protein_data['hydrophobicity'] == "Hydrophilic":
+        score += 15
+        reasons.append("Hydrophilic protein — likely soluble and accessible")
+    
+    # Aromaticity — aromatic residues important for drug binding
+    if protein_data['aromaticity'] > 0.05:
+        score += 15
+        reasons.append("High aromaticity — aromatic residues facilitate drug binding")
+    
+    # Secondary structure — proteins with mixed structure are good targets
+    helix = protein_data['secondary_structure']['helix_fraction']
+    sheet = protein_data['secondary_structure']['sheet_fraction']
+    if helix > 0.2 and sheet > 0.1:
+        score += 15
+        reasons.append("Mixed secondary structure — good binding pocket potential")
+    
+    # Length — longer proteins have more potential binding sites
+    if protein_data['protein_length'] > 100:
+        score += 15
+        reasons.append("Sufficient length for multiple binding sites")
+    
+    if score >= 80:
+        potential = "High"
+        recommendation = "Strong drug target candidate. Recommend structural analysis and binding studies."
+    elif score >= 50:
+        potential = "Moderate"
+        recommendation = "Moderate drug target potential. Further characterization recommended."
+    else:
+        potential = "Low"
+        recommendation = "Limited drug target potential based on current analysis."
+    
+    return {
+        "drug_target_score": score,
+        "drug_target_potential": potential,
+        "recommendation": recommendation,
+        "scoring_reasons": reasons
+    }
+
+def check_arabian_endemic_relevance(protein_data, species_info=""):
+    """Check if protein has Arabian endemic relevance"""
+    arabian_keywords = [
+        'camel', 'arabian', 'desert', 'scorpion', 'frankincense',
+        'boswellia', 'date palm', 'phoenix', 'oryx', 'leopard',
+        'dugong', 'mangrove', 'avicennia', 'gulf', 'sand', 'arid'
+    ]
+    
+    species_lower = species_info.lower()
+    is_arabian = any(keyword in species_lower for keyword in arabian_keywords)
+    
+    applications = []
+    
+    if protein_data['stability'] == "Stable" and protein_data['molecular_weight_da'] > 10000:
+        applications.append("Industrial enzyme candidate — heat stable proteins valuable for biotechnology")
+    
+    if protein_data['drug_target_potential'] == "High":
+        applications.append("Pharmaceutical candidate — potential novel drug from Arabian endemic species")
+    
+    if protein_data['hydrophobicity'] == "Hydrophobic":
+        applications.append("Membrane protein candidate — potential antimicrobial or biosensor application")
+    
+    if protein_data['aromaticity'] > 0.08:
+        applications.append("High aromatic content — potential antimicrobial peptide properties")
+    
+    return {
+        "is_arabian_endemic": is_arabian,
+        "arabian_relevance": "High — Arabian endemic species protein" if is_arabian else "General — species not identified as Arabian endemic",
+        "potential_applications": applications,
+        "bank_recommendation": "Recommend banking in AGBB Protein Division" if is_arabian else "Eligible for AGBB general protein catalogue"
+    }
+
+
+@app.route('/api/protein', methods=['POST'])
+def analyze_protein_endpoint():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON body"}), 400
+
+        protein_sequence = ""
+        dna_sequence = ""
+        input_type = data.get('input_type', 'protein')
+
+        if input_type == 'dna':
+            if 'sequence' not in data and 'file_url' not in data:
+                return jsonify({"status": "error", "message": "Missing DNA sequence"}), 400
+            
+            if 'file_url' in data:
+                fasta_text = fetch_file(data['file_url'])
+                fasta_io = io.StringIO(fasta_text)
+                try:
+                    record = next(SeqIO.parse(fasta_io, "fasta"))
+                    dna_sequence = str(record.seq).upper()
+                except StopIteration:
+                    return jsonify({"status": "error", "message": "Invalid FASTA format"}), 400
+            else:
+                dna_sequence = data['sequence'].upper()
+            
+            protein_sequence = translate_dna_to_protein(dna_sequence)
+            
+            if not protein_sequence:
+                return jsonify({"status": "error", "message": "Could not translate DNA to protein. Check sequence format."}), 400
+
+        elif input_type == 'protein':
+            if 'sequence' not in data:
+                return jsonify({"status": "error", "message": "Missing protein sequence"}), 400
+            protein_sequence = data['sequence'].upper()
+        else:
+            return jsonify({"status": "error", "message": "input_type must be 'dna' or 'protein'"}), 400
+
+        species_info = data.get('species', '')
+        
+        # Full protein analysis
+        protein_data = analyze_protein(protein_sequence)
+        if not protein_data:
+            return jsonify({"status": "error", "message": "Protein sequence too short or invalid"}), 400
+
+        # Drug target scoring
+        drug_target = score_drug_target_potential(protein_data)
+        protein_data.update(drug_target)
+
+        # Arabian endemic relevance
+        arabian_relevance = check_arabian_endemic_relevance(protein_data, species_info)
+
+        # AlphaFold link generation
+        alphafold_note = "For 3D structure prediction, submit your protein sequence to AlphaFold at https://alphafold.ebi.ac.uk/"
+        
+        return jsonify({
+            "status": "success",
+            "protein_analysis": {
+                "input_type": input_type,
+                "protein_sequence": protein_sequence[:100] + "..." if len(protein_sequence) > 100 else protein_sequence,
+                "protein_sequence_full": protein_sequence,
+                "dna_source": dna_sequence[:50] + "..." if dna_sequence else None,
+                **protein_data,
+                "arabian_endemic": arabian_relevance,
+                "alphafold_note": alphafold_note
+            },
+            "message": f"Successfully analyzed protein of {len(protein_sequence)} amino acids"
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Protein analysis failed: {str(e)}"}), 500
+
+
+@app.route('/api/protein/translate', methods=['POST'])
+def translate_only():
+    """Quick DNA to protein translation endpoint"""
+    try:
+        data = request.get_json()
+        if not data or 'sequence' not in data:
+            return jsonify({"status": "error", "message": "Missing DNA sequence"}), 400
+
+        dna_sequence = data['sequence'].upper().strip()
+        protein = translate_dna_to_protein(dna_sequence)
+
+        if not protein:
+            return jsonify({"status": "error", "message": "Translation failed — check sequence format"}), 400
+
+        return jsonify({
+            "status": "success",
+            "translation": {
+                "dna_length": len(dna_sequence),
+                "protein_sequence": protein,
+                "protein_length": len(protein),
+                "codon_count": len(dna_sequence) // 3
+            },
+            "message": "Translation successful"
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Translation failed: {str(e)}"}), 500
+
+
+@app.route('/api/protein/compare', methods=['POST'])
+def compare_proteins():
+    """Compare two protein sequences"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON body"}), 400
+
+        if 'sequence_1' not in data or 'sequence_2' not in data:
+            return jsonify({"status": "error", "message": "Missing sequence_1 or sequence_2"}), 400
+
+        protein1 = data['sequence_1'].upper()
+        protein2 = data['sequence_2'].upper()
+
+        analysis1 = analyze_protein(protein1)
+        analysis2 = analyze_protein(protein2)
+
+        if not analysis1 or not analysis2:
+            return jsonify({"status": "error", "message": "One or both sequences invalid"}), 400
+
+        # Simple similarity calculation
+        min_len = min(len(protein1), len(protein2))
+        matches = sum(1 for a, b in zip(protein1[:min_len], protein2[:min_len]) if a == b)
+        similarity = round(matches / min_len * 100, 2)
+
+        mw_diff = round(abs(analysis1['molecular_weight_da'] - analysis2['molecular_weight_da']), 2)
+        pi_diff = round(abs(analysis1['isoelectric_point'] - analysis2['isoelectric_point']), 2)
+
+        if similarity > 90:
+            relationship = "Highly Similar — likely same protein family"
+        elif similarity > 70:
+            relationship = "Moderately Similar — possible homologs"
+        elif similarity > 50:
+            relationship = "Distantly Related — possible evolutionary relationship"
+        else:
+            relationship = "Dissimilar — likely different protein families"
+
+        return jsonify({
+            "status": "success",
+            "comparison": {
+                "sequence_1_length": len(protein1),
+                "sequence_2_length": len(protein2),
+                "similarity_percentage": similarity,
+                "relationship": relationship,
+                "molecular_weight_difference_da": mw_diff,
+                "isoelectric_point_difference": pi_diff,
+                "protein_1_analysis": analysis1,
+                "protein_2_analysis": analysis2
+            },
+            "message": f"Proteins are {similarity}% similar"
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Comparison failed: {str(e)}"}), 500
+
+
+@app.route('/api/protein/screen', methods=['POST'])
+def screen_antimicrobial():
+    """Screen protein for antimicrobial peptide potential"""
+    try:
+        data = request.get_json()
+        if not data or 'sequence' not in data:
+            return jsonify({"status": "error", "message": "Missing protein sequence"}), 400
+
+        protein = data['sequence'].upper().strip()
+        clean_protein = ''.join(c for c in protein if c in 'ACDEFGHIKLMNPQRSTVWY')
+
+        if len(clean_protein) < 5:
+            return jsonify({"status": "error", "message": "Sequence too short"}), 400
+
+        analysis = ProteinAnalysis(clean_protein)
+
+        gravy = round(analysis.gravy(), 4)
+        charge = round(analysis.charge_at_pH(7.0), 2)
+        length = len(clean_protein)
+        aromaticity = round(analysis.aromaticity(), 4)
+
+        amp_score = 0
+        amp_reasons = []
+
+        # AMPs are typically short (10-50 aa)
+        if 10 <= length <= 50:
+            amp_score += 25
+            amp_reasons.append("Length in typical AMP range (10-50 amino acids)")
+
+        # AMPs typically have positive charge
+        if charge > 2:
+            amp_score += 25
+            amp_reasons.append("Positive charge — characteristic of antimicrobial peptides")
+
+        # AMPs are typically amphipathic
+        if gravy > 0.5:
+            amp_score += 20
+            amp_reasons.append("Hydrophobic character — facilitates membrane disruption")
+
+        # High aromatic content
+        if aromaticity > 0.1:
+            amp_score += 15
+            amp_reasons.append("High aromaticity — associated with membrane active peptides")
+
+        # Cysteine content (many AMPs have disulfide bonds)
+        cys_content = clean_protein.count('C') / length
+        if cys_content > 0.05:
+            amp_score += 15
+            amp_reasons.append("Cysteine-rich — potential disulfide bond formation typical of defensins")
+
+        if amp_score >= 70:
+            amp_potential = "High"
+            amp_recommendation = "Strong antimicrobial peptide candidate. Recommend in vitro antimicrobial testing against Gulf-prevalent pathogens."
+        elif amp_score >= 40:
+            amp_potential = "Moderate"
+            amp_recommendation = "Moderate AMP potential. Further structural analysis recommended."
+        else:
+            amp_potential = "Low"
+            amp_recommendation = "Low antimicrobial peptide potential based on sequence properties."
+
+        # Arabian context
+        arabian_pathogens = [
+            "Staphylococcus aureus (MRSA) — prevalent in Gulf hospitals",
+            "Klebsiella pneumoniae — common in UAE ICUs",
+            "Acinetobacter baumannii — Gulf region concern",
+            "MERS-CoV related pathogens — Arabian Peninsula endemic"
+        ]
+
+        return jsonify({
+            "status": "success",
+            "antimicrobial_screening": {
+                "protein_length": length,
+                "amp_score": amp_score,
+                "amp_potential": amp_potential,
+                "amp_recommendation": amp_recommendation,
+                "scoring_reasons": amp_reasons,
+                "key_properties": {
+                    "charge_at_pH7": charge,
+                    "hydrophobicity_gravy": gravy,
+                    "aromaticity": aromaticity,
+                    "cysteine_content": round(cys_content * 100, 2)
+                },
+                "arabian_pathogen_targets": arabian_pathogens if amp_potential in ["High", "Moderate"] else [],
+                "next_steps": "Submit to APD3 (Antimicrobial Peptide Database) for comparison with known AMPs" if amp_potential == "High" else "Consider peptide optimization before experimental validation"
+            },
+            "message": f"Antimicrobial screening complete — {amp_potential} AMP potential"
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"AMP screening failed: {str(e)}"}), 500
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
