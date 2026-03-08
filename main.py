@@ -1643,6 +1643,190 @@ def screen_antimicrobial():
 
     except Exception as e:
         return jsonify({"status": "error", "message": f"AMP screening failed: {str(e)}"}), 500
+# ─────────────────────────────────────────
+# 3D PROTEIN STRUCTURE PREDICTION
+# ─────────────────────────────────────────
+
+@app.route('/api/protein/structure', methods=['POST'])
+def predict_structure():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON body"}), 400
+
+        protein_sequence = ""
+        input_type = data.get('input_type', 'protein')
+
+        if input_type == 'dna':
+            if 'sequence' not in data:
+                return jsonify({"status": "error", "message": "Missing DNA sequence"}), 400
+            dna_sequence = data['sequence'].upper().strip()
+            protein_sequence = translate_dna_to_protein(dna_sequence)
+            if not protein_sequence:
+                return jsonify({"status": "error", "message": "Could not translate DNA to protein"}), 400
+
+        elif input_type == 'protein':
+            if 'sequence' not in data:
+                return jsonify({"status": "error", "message": "Missing protein sequence"}), 400
+            protein_sequence = data['sequence'].upper().strip()
+        else:
+            return jsonify({"status": "error", "message": "input_type must be dna or protein"}), 400
+
+        # Clean protein sequence
+        clean_protein = ''.join(c for c in protein_sequence if c in 'ACDEFGHIKLMNPQRSTVWY')
+
+        if len(clean_protein) < 10:
+            return jsonify({"status": "error", "message": "Protein sequence too short for structure prediction (min 10 aa)"}), 400
+
+        if len(clean_protein) > 400:
+            return jsonify({"status": "error", "message": "Protein sequence too long for free tier prediction (max 400 aa). Please use a shorter sequence or submit to AlphaFold directly."}), 400
+
+        # Call ESMFold API
+        esm_url = "https://api.esmatlas.com/foldSequence/v1/pdb/"
+        
+        try:
+            esm_response = requests.post(
+                esm_url,
+                data=clean_protein,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=120
+            )
+            
+            if esm_response.status_code != 200:
+                return jsonify({
+                    "status": "error",
+                    "message": "ESMFold structure prediction failed. Try a shorter sequence or try again later.",
+                    "fallback": "Submit your sequence manually at https://esmatlas.com/resources?action=fold"
+                }), 500
+
+            pdb_content = esm_response.text
+
+        except requests.Timeout:
+            return jsonify({
+                "status": "error", 
+                "message": "Structure prediction timed out. Sequence may be too complex. Try a shorter sequence under 200 amino acids.",
+                "fallback": "Submit your sequence at https://esmatlas.com/resources?action=fold"
+            }), 504
+
+        # Basic structure quality assessment
+        ca_count = pdb_content.count(' CA ')
+        residue_count = len(clean_protein)
+        
+        # Extract confidence scores from PDB B-factor column
+        confidence_scores = []
+        for line in pdb_content.split('\n'):
+            if line.startswith('ATOM') and ' CA ' in line:
+                try:
+                    b_factor = float(line[60:66].strip())
+                    confidence_scores.append(b_factor)
+                except:
+                    pass
+
+        avg_confidence = round(sum(confidence_scores) / len(confidence_scores), 2) if confidence_scores else 0
+
+        if avg_confidence >= 90:
+            confidence_level = "Very High"
+            confidence_note = "Structure prediction is highly reliable."
+        elif avg_confidence >= 70:
+            confidence_level = "High"
+            confidence_note = "Structure prediction is reliable for most regions."
+        elif avg_confidence >= 50:
+            confidence_level = "Moderate"
+            confidence_note = "Some regions may be less accurate. Interpret with caution."
+        else:
+            confidence_level = "Low"
+            confidence_note = "Structure prediction has low confidence. Experimental validation recommended."
+
+        # Count secondary structure elements from PDB
+        helix_count = pdb_content.count('HELIX')
+        sheet_count = pdb_content.count('SHEET')
+
+        return jsonify({
+            "status": "success",
+            "structure_prediction": {
+                "protein_length": len(clean_protein),
+                "protein_sequence": clean_protein,
+                "pdb_content": pdb_content,
+                "prediction_method": "ESMFold (Meta AI)",
+                "average_confidence": avg_confidence,
+                "confidence_level": confidence_level,
+                "confidence_note": confidence_note,
+                "structural_features": {
+                    "residues_modeled": ca_count,
+                    "alpha_helices": helix_count,
+                    "beta_sheets": sheet_count
+                },
+                "visualization_note": "Use the PDB content with 3Dmol.js or NGL Viewer for 3D visualization",
+                "alphafold_link": "https://alphafold.ebi.ac.uk/",
+                "esmatlas_link": "https://esmatlas.com/resources?action=fold"
+            },
+            "message": f"3D structure predicted successfully for {len(clean_protein)} amino acid protein"
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Structure prediction failed: {str(e)}"}), 500
+
+
+@app.route('/api/protein/alphafold/<uniprot_id>', methods=['GET'])
+def get_alphafold_structure(uniprot_id):
+    """Fetch existing AlphaFold structure for known proteins by UniProt ID"""
+    try:
+        # Fetch structure info from AlphaFold database
+        af_url = f"https://alphafold.ebi.ac.uk/api/prediction/{uniprot_id}"
+        
+        af_response = requests.get(af_url, timeout=30)
+        
+        if af_response.status_code == 404:
+            return jsonify({
+                "status": "error",
+                "message": f"No AlphaFold structure found for UniProt ID {uniprot_id}. Try ESMFold for custom sequences.",
+                "fallback": "/api/protein/structure"
+            }), 404
+
+        if af_response.status_code != 200:
+            return jsonify({
+                "status": "error",
+                "message": "AlphaFold API unavailable. Try again later."
+            }), 500
+
+        af_data = af_response.json()
+
+        if not af_data:
+            return jsonify({"status": "error", "message": "No data returned from AlphaFold"}), 404
+
+        structure_info = af_data[0] if isinstance(af_data, list) else af_data
+
+        # Fetch the actual PDB file
+        pdb_url = structure_info.get('pdbUrl', '')
+        pdb_content = ""
+        
+        if pdb_url:
+            try:
+                pdb_response = requests.get(pdb_url, timeout=30)
+                pdb_content = pdb_response.text
+            except:
+                pdb_content = ""
+
+        return jsonify({
+            "status": "success",
+            "alphafold_structure": {
+                "uniprot_id": uniprot_id,
+                "entry_id": structure_info.get('entryId', ''),
+                "gene": structure_info.get('gene', ''),
+                "organism": structure_info.get('organismScientificName', ''),
+                "protein_name": structure_info.get('uniprotDescription', ''),
+                "sequence_length": structure_info.get('uniprotSequenceLength', 0),
+                "model_confidence": structure_info.get('confidenceAvgLocalScore', 0),
+                "pdb_url": pdb_url,
+                "pdb_content": pdb_content[:50000] if pdb_content else "",
+                "cif_url": structure_info.get('cifUrl', ''),
+                "prediction_method": "AlphaFold2 (Google DeepMind)"
+            },
+            "message": f"AlphaFold structure retrieved for {uniprot_id}"
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"AlphaFold fetch failed: {str(e)}"}), 500
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
